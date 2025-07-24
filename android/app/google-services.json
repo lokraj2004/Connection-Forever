@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "424875062626",
+    "firebase_url": "https://coupling-together-5e78a-default-rtdb.firebaseio.com",
+    "project_id": "coupling-together-5e78a",
+    "storage_bucket": "coupling-together-5e78a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:424875062626:android:e93982c9391df182aa283b",
+        "android_client_info": {
+          "package_name": "com.example.connection_forever"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAd41SvaOcLC81rS8ttkAU3gbxbE6ZXoWg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:424875062626:android:392c27e99cc57a77aa283b",
+        "android_client_info": {
+          "package_name": "com.example.coupling_together"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAd41SvaOcLC81rS8ttkAU3gbxbE6ZXoWg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
