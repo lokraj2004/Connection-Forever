@@ -1,0 +1,401 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'cf_data_tracker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:lottie/lottie.dart';
+import 'BG_wrapper.dart';
+
+class SensorDataPage extends StatefulWidget {
+  final String slotKey;
+  final String username;
+
+  const SensorDataPage({
+    super.key,
+    required this.slotKey,
+    required this.username,
+  });
+
+  @override
+  State<SensorDataPage> createState() => _SensorDataPageState();
+}
+class _SensorDataPageState extends State<SensorDataPage> {
+  final DatabaseReference _sensorsRef = FirebaseDatabase.instance.ref('sensors');
+  late CFDataTracker _dataTracker;
+  DateTime? _appLaunchTime;
+
+  bool isDiscreteMode = true;
+  List<Batch> continuousDataList = [];
+  Timer? pollingTimer;
+  DateTime? _lastDataTimestamp;
+  bool _isAdminUnavailable = false;
+  Timer? _inactivityTimer;
+
+
+  @override
+  void initState() {
+    super.initState();
+    _startPollingIfNeeded();
+    _dataTracker = CFDataTracker();
+    _startTracker(); // Start the tracker once the page is built
+    _startInactivityMonitor();
+  }
+  void _startInactivityMonitor() {
+    _inactivityTimer = Timer.periodic(Duration(seconds: 5), (_) {
+      final now = DateTime.now();
+
+      // First-time check if no data received yet
+      if (_lastDataTimestamp == null) {
+        if (_appLaunchTime == null) {
+          _appLaunchTime = now;
+        }
+        final launchDiff = now.difference(_appLaunchTime!);
+        if (launchDiff.inSeconds >= 180 && !_isAdminUnavailable) {
+          setState(() {
+            _isAdminUnavailable = true;
+          });
+        }
+        return;
+      }
+
+      // Regular check if data has stopped after some time
+      final diff = now.difference(_lastDataTimestamp!);
+      if (diff.inSeconds >= 60 && !_isAdminUnavailable) {
+        setState(() {
+          _isAdminUnavailable = true;
+        });
+      }
+    });
+  }
+
+
+  Future<void> _startTracker() async {
+    // Save slotKey to SharedPreferences for tracker
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('slotKey', widget.slotKey);
+    await _dataTracker.startTracking();
+  }
+
+  @override
+  void dispose() {
+    pollingTimer?.cancel();
+    _dataTracker.stopTracking(); // Make sure to stop the tracker
+    _inactivityTimer?.cancel();
+
+    super.dispose();
+  }
+  // Example: Suppose you receive new data from Firebase here
+  void _onDataReceived(double newDataMB) {
+    _dataTracker.addDownloadedData(newDataMB);
+
+    setState(() {
+      _lastDataTimestamp = DateTime.now();
+      if (_isAdminUnavailable) {
+        _isAdminUnavailable = false;
+      }
+    });
+    // Continue normal logic of updating UI etc.
+  }
+
+  double _estimateDataMB(int itemCount) {
+    // A basic estimate: 1 item ~ 0.003 MB (3 KB)
+    return itemCount * 0.003;
+  }
+
+  void _startPollingIfNeeded() {
+    pollingTimer?.cancel();
+    if (!isDiscreteMode) {
+      pollingTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+        final snapshot = await _sensorsRef.get();
+        final dynamic rawData = snapshot.value;
+        if (rawData is List) {
+          final List<Batch> newData = rawData
+              .where((e) => e != null)
+              .map((e) => Batch(
+            id: e['id'] ?? 0,
+            name: e['name'] ?? 'NULL',
+            value: (e['value'] is num) ? e['value'] : null,
+            unit: e['unit'] ?? 'NULL',
+          ))
+              .toList();
+          setState(() {
+            continuousDataList.addAll(newData);
+          });
+          double mbDownloaded = _estimateDataMB(newData.length);
+          _onDataReceived(mbDownloaded);
+        }
+      });
+    }
+  }
+
+  Future<bool> _onWillPop() async {
+    await _dataTracker.stopTracking(); // Final sync before exiting
+    return true; // Allow pop after cleanup
+  }
+
+  void _toggleMode(bool value) {
+    setState(() {
+      isDiscreteMode = value;
+      continuousDataList.clear(); // reset continuous data list when switching
+    });
+    _startPollingIfNeeded();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return WillPopScope(
+        onWillPop: _onWillPop,
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text("Sensor Data",style: TextStyle(color: Colors.white)),
+        backgroundColor: Color(0xFF00687A),
+        actions: [
+          PopupMenuButton<String>(
+            icon: Icon(Icons.more_vert,color: Colors.white.withOpacity(0.9)),
+            onSelected: (value) {
+              if (value == 'toggle') {
+                _toggleMode(!isDiscreteMode);
+              } else if (value == 'clear') {
+                if (isDiscreteMode) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Could not clear in discrete mode"),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                } else {
+                  setState(() {
+                    continuousDataList.clear();
+                  });
+                }
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem<String>(
+                value: 'toggle',
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Discrete'),
+                    Switch(
+                      value: isDiscreteMode,
+                      onChanged: (value) {
+                        Navigator.pop(context); // Close the popup
+                        _toggleMode(value);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const PopupMenuItem<String>(
+                value: 'clear',
+                child: Text('Clear Continuous List'),
+              ),
+            ],
+          ),
+        ],
+
+      ),
+      body: BackgroundWrapper(
+          child: isDiscreteMode ? _buildDiscreteStream() : _buildContinuousList(),
+    ))
+    );
+  }
+
+  Widget _buildDiscreteStream() {
+    if (_isAdminUnavailable) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Image.asset(
+              'assets/images/SleepingMicrocontroller.png', // Add your image here
+              width: 300,
+              height: 300,
+            ),
+            const SizedBox(height: 30),
+            const Text(
+              "Admin (CT) is not available.\nPlease try after some time.",
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500,color: Colors.red),
+
+            ),
+          ],
+        ),
+      );
+    }
+    return StreamBuilder<DatabaseEvent>(
+      stream: _sensorsRef.onValue,
+      builder: (context, snapshot) {
+        if (snapshot.hasData && snapshot.data!.snapshot.value != null) {
+          final dynamic rawData = snapshot.data!.snapshot.value;
+
+          if (rawData is List) {
+            final List<Batch> batches = rawData
+                .where((e) => e != null)
+                .map((e) => Batch(
+              id: e['id'] ?? 0,
+              name: e['name'] ?? 'NULL',
+              value: (e['value'] is num) ? e['value'] : null,
+              unit: e['unit'] ?? 'NULL',
+            ))
+                .toList();
+
+            if (batches.isEmpty) {
+              return const Center(child: Text("No valid sensor data found"));
+            }
+            double mbDownloaded = _estimateDataMB(batches.length);
+
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _onDataReceived(mbDownloaded);
+            });
+
+            return ListView.builder(
+              itemCount: batches.length,
+              itemBuilder: (context, index) {
+                return _buildCard(batches[index]);
+              },
+            );
+          } else {
+            return const Center(child: Text("Invalid sensor data format"));
+          }
+        } else if (snapshot.hasError) {
+          return const Center(child: Text("Error loading data"));
+        } else {
+          return Center(
+            child: Lottie.asset(
+              'assets/animations/SandLoading.json',
+              width: 200,
+              height: 200,
+              fit: BoxFit.contain,
+            ),
+          );
+        }
+      },
+    );
+  }
+
+  Widget _buildContinuousList() {
+    if (continuousDataList.isEmpty) {
+      return Center(
+        child: Lottie.asset(
+          'assets/animations/SandLoading.json',
+          width: 200,
+          height: 200,
+          fit: BoxFit.contain,
+        ),
+      );
+    }
+    return ListView.builder(
+      itemCount: continuousDataList.length,
+      itemBuilder: (context, index) {
+        return _buildCard(continuousDataList[index]);
+      },
+    );
+  }
+
+  Widget _buildCard(Batch batch) {
+    bool isNameNull = batch.name == "NULL";
+    bool isUnitNull = batch.unit == "NULL";
+    bool isValueNegative = batch.value != null && batch.value < 0;
+
+    String title = "";
+    String subtitle = "";
+
+    if (isNameNull && isUnitNull && isValueNegative) {
+      return _emptyCard();
+    }
+
+    if (!isNameNull && !isUnitNull && batch.value != null && batch.value >= 0) {
+      title = batch.name;
+      subtitle = "${batch.value} ${batch.unit}";
+      return _cardWithTitleSubtitle(batch.id, title, subtitle);
+    }
+
+    if (isNameNull && !isUnitNull && batch.value != null && batch.value >= 0) {
+      return _simpleTextCard("${batch.value} ${batch.unit}");
+    }
+
+    if (isValueNegative && !isNameNull && !isUnitNull) {
+      return _simpleTextCard("${batch.name} ${batch.unit}");
+    }
+
+    if (!isNameNull && isUnitNull && batch.value != null && batch.value >= 0) {
+      return _simpleTextCard("${batch.name} ${batch.value}");
+    }
+
+    if (isValueNegative && isUnitNull && !isNameNull) {
+      return _simpleTextCard(batch.name);
+    }
+
+    if (isNameNull && isUnitNull && batch.value != null && batch.value >= 0) {
+      return _simpleTextCard("${batch.value}");
+    }
+
+    if (isNameNull && isValueNegative && !isUnitNull) {
+      return _centeredCard(batch.unit);
+    }
+
+    return _simpleTextCard("Unclassified Batch");
+  }
+
+  Widget _cardWithTitleSubtitle(int id, String title, String subtitle) {
+    return Card(
+      margin: const EdgeInsets.all(10),
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ListTile(
+        leading: CircleAvatar(child: Text('$id')),
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+        subtitle: Text(subtitle),
+      ),
+    );
+  }
+
+  Widget _centeredCard(String centerText) {
+    return Card(
+      margin: const EdgeInsets.all(10),
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Center(
+          child: Text(centerText, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        ),
+      ),
+    );
+  }
+
+  Widget _simpleTextCard(String text) {
+    return Card(
+      margin: const EdgeInsets.all(10),
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text(text, style: const TextStyle(fontSize: 16)),
+      ),
+    );
+  }
+
+  Widget _emptyCard() {
+    return Card(
+      margin: const EdgeInsets.all(10),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: const SizedBox(height: 50),
+    );
+  }
+
+
+
+}
+
+class Batch {
+  final int id;
+  final String name;
+  final dynamic value;
+  final String unit;
+
+  Batch({required this.id, required this.name, required this.value, required this.unit});
+}
