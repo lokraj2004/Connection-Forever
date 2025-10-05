@@ -9,11 +9,11 @@ class AboutPage extends StatelessWidget {
   final String developerName = 'N. Lokeshraj';
   final String role = 'Final Year ECE Student';
   final String organization = 'Meenakshi Sundararajan Engineering College';
-  final String location = 'Chennai, India';
+  final String location = '';
 
-  final String phone = '+91 7397449245';
-  final String email = 'rajlok2004@gmail.com';
-  final String linkedInURL = 'https://www.linkedin.com/in/lokeshraj-n-6148132a1';
+  final String phone = '';
+  final String email = '';
+  final String linkedInURL = '';
   final String githubURL = 'https://github.com/lokraj2004';
 
   void _launchUrl(String url) async {
@@ -37,7 +37,7 @@ class AboutPage extends StatelessWidget {
               const Text(
                 'Current Admin: Lokeshraj N',
                 style: TextStyle(
-                  fontSize: 26,
+                  fontSize: 24,
                   fontWeight: FontWeight.bold,
                 ),
                 textAlign: TextAlign.center,

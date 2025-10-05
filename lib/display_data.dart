@@ -5,6 +5,7 @@ import 'cf_data_tracker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:lottie/lottie.dart';
 import 'BG_wrapper.dart';
+import 'dart:convert';
 
 class SensorDataPage extends StatefulWidget {
   final String slotKey;
@@ -30,7 +31,7 @@ class _SensorDataPageState extends State<SensorDataPage> {
   DateTime? _lastDataTimestamp;
   bool _isAdminUnavailable = false;
   Timer? _inactivityTimer;
-
+  String? _lastSnapshotHash;
 
   @override
   void initState() {
@@ -68,6 +69,13 @@ class _SensorDataPageState extends State<SensorDataPage> {
     });
   }
 
+  bool _isNewData(dynamic rawData) {
+    if (rawData == null) return false;
+    final hash = rawData.hashCode.toString();
+    if (_lastSnapshotHash == hash) return false;
+    _lastSnapshotHash = hash;
+    return true;
+  }
 
   Future<void> _startTracker() async {
     // Save slotKey to SharedPreferences for tracker
@@ -97,15 +105,15 @@ class _SensorDataPageState extends State<SensorDataPage> {
     // Continue normal logic of updating UI etc.
   }
 
-  double _estimateDataMB(int itemCount) {
-    // A basic estimate: 1 item ~ 0.003 MB (3 KB)
-    return itemCount * 0.003;
+  double _estimateDataMB(dynamic data) {
+    final bytes = utf8.encode(jsonEncode(data)).length;
+    return bytes / (1024 * 1024); // convert bytes → MB
   }
 
   void _startPollingIfNeeded() {
     pollingTimer?.cancel();
     if (!isDiscreteMode) {
-      pollingTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      pollingTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
         final snapshot = await _sensorsRef.get();
         final dynamic rawData = snapshot.value;
         if (rawData is List) {
@@ -121,7 +129,7 @@ class _SensorDataPageState extends State<SensorDataPage> {
           setState(() {
             continuousDataList.addAll(newData);
           });
-          double mbDownloaded = _estimateDataMB(newData.length);
+          double mbDownloaded = _estimateDataMB(newData);
           _onDataReceived(mbDownloaded);
         }
       });
@@ -230,7 +238,7 @@ class _SensorDataPageState extends State<SensorDataPage> {
         if (snapshot.hasData && snapshot.data!.snapshot.value != null) {
           final dynamic rawData = snapshot.data!.snapshot.value;
 
-          if (rawData is List) {
+          if (rawData is List && _isNewData(rawData) ){
             final List<Batch> batches = rawData
                 .where((e) => e != null)
                 .map((e) => Batch(
@@ -241,14 +249,14 @@ class _SensorDataPageState extends State<SensorDataPage> {
             ))
                 .toList();
 
-            if (batches.isEmpty) {
+            if (batches.isNotEmpty) {
+              double mbDownloaded = _estimateDataMB(batches);
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _onDataReceived(mbDownloaded);
+              });
+            }else{
               return const Center(child: Text("No valid sensor data found"));
             }
-            double mbDownloaded = _estimateDataMB(batches.length);
-
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              _onDataReceived(mbDownloaded);
-            });
 
             return ListView.builder(
               itemCount: batches.length,
@@ -386,9 +394,6 @@ class _SensorDataPageState extends State<SensorDataPage> {
       child: const SizedBox(height: 50),
     );
   }
-
-
-
 }
 
 class Batch {
