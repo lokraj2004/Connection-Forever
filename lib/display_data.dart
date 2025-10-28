@@ -24,6 +24,7 @@ class _SensorDataPageState extends State<SensorDataPage> {
   final DatabaseReference _sensorsRef = FirebaseDatabase.instance.ref('sensors');
   late CFDataTracker _dataTracker;
   DateTime? _appLaunchTime;
+  List<Batch> _discreteCache = [];
 
   bool isDiscreteMode = true;
   List<Batch> continuousDataList = [];
@@ -106,8 +107,18 @@ class _SensorDataPageState extends State<SensorDataPage> {
   }
 
   double _estimateDataMB(dynamic data) {
-    final bytes = utf8.encode(jsonEncode(data)).length;
-    return bytes / (1024 * 1024); // convert bytes → MB
+    dynamic encodable;
+
+    if (data is List<Batch>) {
+      encodable = data.map((b) => b.toMap()).toList();
+    } else if (data is Batch) {
+      encodable = data.toMap();
+    } else {
+      encodable = data;
+    }
+
+    final bytes = utf8.encode(jsonEncode(encodable)).length;
+    return bytes / (1024 * 1024);
   }
 
   void _startPollingIfNeeded() {
@@ -217,7 +228,7 @@ class _SensorDataPageState extends State<SensorDataPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Image.asset(
-              'assets/images/SleepingMicrocontroller.png', // Add your image here
+              'assets/images/SleepingMicrocontroller.png',
               width: 300,
               height: 300,
             ),
@@ -225,48 +236,54 @@ class _SensorDataPageState extends State<SensorDataPage> {
             const Text(
               "Admin (CT) is not available.\nPlease try after some time.",
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500,color: Colors.red),
-
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w500, color: Colors.red),
             ),
           ],
         ),
       );
     }
+
     return StreamBuilder<DatabaseEvent>(
       stream: _sensorsRef.onValue,
       builder: (context, snapshot) {
         if (snapshot.hasData && snapshot.data!.snapshot.value != null) {
-          final dynamic rawData = snapshot.data!.snapshot.value;
+          final rawData = snapshot.data!.snapshot.value;
 
-          if (rawData is List && _isNewData(rawData) ){
-            final List<Batch> batches = rawData
+          if (rawData is List && _isNewData(rawData)) {
+            final List<Batch> newBatches = rawData
                 .where((e) => e != null)
-                .map((e) => Batch(
-              id: e['id'] ?? 0,
-              name: e['name'] ?? 'NULL',
-              value: (e['value'] is num) ? e['value'] : null,
-              unit: e['unit'] ?? 'NULL',
-            ))
+                .map((e) => Batch.fromMap(e))
                 .toList();
 
-            if (batches.isNotEmpty) {
-              double mbDownloaded = _estimateDataMB(batches);
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _onDataReceived(mbDownloaded);
-              });
-            }else{
-              return const Center(child: Text("No valid sensor data found"));
+            // --- Adaptive update logic ---
+            for (int i = 0; i < newBatches.length; i++) {
+              if (_discreteCache.length <= i) {
+                // New batch added
+                _discreteCache.add(newBatches[i]);
+              } else if (!_discreteCache[i].isSame(newBatches[i])) {
+                // Existing batch changed in any field
+                _discreteCache[i] = newBatches[i];
+              }
             }
 
-            return ListView.builder(
-              itemCount: batches.length,
-              itemBuilder: (context, index) {
-                return _buildCard(batches[index]);
-              },
-            );
-          } else {
-            return const Center(child: Text("Invalid sensor data format"));
+            // If the new data has fewer elements (some removed)
+            if (_discreteCache.length > newBatches.length) {
+              _discreteCache = _discreteCache.sublist(0, newBatches.length);
+            }
+
+            // Track download usage
+            double mbDownloaded = _estimateDataMB(newBatches);
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _onDataReceived(mbDownloaded);
+            });
           }
+
+          return ListView.builder(
+            itemCount: _discreteCache.length,
+            itemBuilder: (context, index) {
+              return _buildCard(_discreteCache[index]);
+            },
+          );
         } else if (snapshot.hasError) {
           return const Center(child: Text("Error loading data"));
         } else {
@@ -282,6 +299,7 @@ class _SensorDataPageState extends State<SensorDataPage> {
       },
     );
   }
+
 
   Widget _buildContinuousList() {
     if (continuousDataList.isEmpty) {
@@ -349,6 +367,7 @@ class _SensorDataPageState extends State<SensorDataPage> {
 
   Widget _cardWithTitleSubtitle(int id, String title, String subtitle) {
     return Card(
+      key: ValueKey(id),
       margin: const EdgeInsets.all(10),
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -402,5 +421,35 @@ class Batch {
   final dynamic value;
   final String unit;
 
-  Batch({required this.id, required this.name, required this.value, required this.unit});
+  Batch({
+    required this.id,
+    required this.name,
+    required this.value,
+    required this.unit,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'name': name,
+      'value': value,
+      'unit': unit,
+    };
+  }
+
+  factory Batch.fromMap(Map<dynamic, dynamic> map) {
+    return Batch(
+      id: map['id'] ?? 0,
+      name: map['name'] ?? 'NULL',
+      value: map['value'],
+      unit: map['unit'] ?? 'NULL',
+    );
+  }
+
+  bool isSame(Batch other) {
+    return id == other.id &&
+        name == other.name &&
+        value == other.value &&
+        unit == other.unit;
+  }
 }
